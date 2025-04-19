@@ -234,7 +234,7 @@ def estimate_once(
         amp_in = d[["NS", "EW", "UD"]].to_numpy().T[np.newaxis]
         preds = np.array([m.predict(amp_in, verbose=0)[0] for m in amp_models])
         lon, lat = preds.mean(axis=0) + ORIGIN_LOC[::-1]
-        lon_std, lat_std = preds.mean(axis=0)
+        lon_std, lat_std = preds.std(axis=0)
         epics.append(
             (
                 start_time,
@@ -270,7 +270,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--workers", type=int, default=8, help="thread pool size")
     p.add_argument(
-        "--out", default="prediction_results.csv", help="output CSV path"
+        "--out",
+        default="../reports/prediction_results.csv",
+        help="output CSV path",
     )
     return p.parse_args(argv)
 
