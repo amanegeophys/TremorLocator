@@ -1,1 +1,3 @@
 src/tools.ipynb
+src/my_module/__pycache__
+src/my_module/sac/__pycache__
