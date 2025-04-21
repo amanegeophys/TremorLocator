@@ -20,7 +20,7 @@ from my_module.utils import setup_logger
 # CONSTANTS (hyper‑parameters that rarely change)
 TREMORNET_PATH: Path = Path("../model/spec_to_proba/tremornet.keras")
 STATION_FILE: Path = Path("../station/hinet129.txt")
-SAC_ROOT: Path = Path("/net/ikkyu/mnt/sda/sac")
+SAC_ROOT: Path = Path("../sac")  # you can change this to your own path
 AMP_TO_EPI_DIR: Path = Path("../model/amp_to_epicenter")
 
 DBSCAN_EPS: float = 0.5

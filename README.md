@@ -58,7 +58,7 @@ TremorEpicenter/
    ```
 
 3. **Prepare Data**
-   - Place SAC waveform files under `sac/{year}/{YYYYMMDDHH}/`.
+   - Place SAC waveform files under `sac/{year}/{YYYYMMDDHH}/` or modify the `SAC_ROOT` variable (line 23) in `predict.py` to specify your own path 
    - Ensure `station/hinet129.txt` is formatted with whitespace separator and headers `lon lat station`.
 
 ## 🖥️ Usage
