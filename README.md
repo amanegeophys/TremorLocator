@@ -2,7 +2,7 @@
 
 Version: 0.1.0
 
-**TremorEpicenter** is a pipeline for detecting seismic tremors and estimating epicenters using deep learning models. It integrates spectrogram-to-probability classification model and a suite of amplitude-to-epicenter regression models to produce predictions from the amplitude of continuous SAC waveform data.
+**TremorEpicenter** is a pipeline for detecting seismic tremors and estimating epicenters using deep learning models. It integrates a spectrogram-to-probability classification model and a set of amplitude-to-epicenter regression models to generate predictions based on the amplitudes of continuous SAC waveform data.
 
 ## 🚀 Features
 
