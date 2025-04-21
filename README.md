@@ -90,13 +90,13 @@ Paper URL: coming soon ?
 ## 📄 Requirements
 
 - Python 3.9+
-- numpy
-- pandas
-- tensorflow>=2.17
-- scikit-learn
-- scipy
-- tqdm
-- obspy
+- numpy==1.26.4
+- pandas==2.2.2
+- tensorflow==2.17.0
+- scikit-learn==1.5.1
+- tqdm==4.66.5
+- scipy==1.13.1
+- obspy==1.4.1
 
 ## 📑 Contributing
 
