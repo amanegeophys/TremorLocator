@@ -1,48 +1,59 @@
-# TremorEpicenter
+# TremorLocator
 
-Version: 0.1.0
+**Version**: 0.2.0
 
-**TremorEpicenter** is a pipeline for detecting seismic tremors and estimating epicenters using deep learning models. It integrates a spectrogram-to-probability classification model and a set of amplitude-to-epicenter regression models to generate predictions based on the amplitudes of continuous SAC waveform data.
+**TremorLocator** is a modular system for detecting seismic tremors and estimating their epicenters using deep learning. It is composed of two key components:
+
+- **TremorDetector**: A classification model that takes spectrograms of waveform segments as input and determines whether the segment corresponds to *noise*, *tremor*, or *earthquake*.
+- **EpicenterRegressor**: A suite of regression models that estimate the geographic location (epicenter) of detected tremors based on waveform amplitude features.
+
+Together, they enable efficient and accurate analysis of continuous seismic waveform data.
+
+---
 
 ## 🚀 Features
 
-- **Tremor Detection**: Classify waveform segments as noise, tremor, or earthquake using a pretrained TremorNet model.
-- **Epicenter Estimation**: Cluster detected tremor signals and regress epicenter coordinates using multiple pretrained regression models.
-- **Parallel Processing**: Leverage multithreading to process station data concurrently for high-throughput inference.
-- **Configurable Time Windows**: Run predictions over arbitrary time ranges with customizable step sizes.
+- **Event Classification**: Use a pretrained CNN-based model (**TremorDetector**) to classify waveform segments using spectrogram inputs.
+- **Epicenter Estimation**: Estimate epicenters for detected tremors using pretrained regression models (**EpicenterRegressor**).
+- **Multithreaded Processing**: High-throughput data handling with concurrent station processing.
+- **Flexible Time Control**: Specify custom time ranges and processing intervals.
+
+---
 
 ## 📁 Directory Structure
 
 ```
-TremorEpicenter/
+TremorLocator/
 ├── model/
-│   ├── spec_to_proba/
-│   │   └── tremornet.keras        # Pretrained classification model
-│   └── amp_to_epicenter/
+│   ├── tremor_detector/                # Spectrogram-to-class model (TremorDetector)
+│   │   └── TremorDetector.keras
+│   └── epicenter_regressors/          # Amplitude-to-location models (EpicenterRegressor)
 │       ├── 001.keras
 │       ├── 002.keras
 │       └── ...
 ├── reports/ 
-│    └── prediction_results.csv
+│   └── prediction_results.csv          # Output predictions
 ├── sac/
-│   └── {year}/
-│       └── {YYYYMMDDHH}/
-│           ├── N.xxxx.N.SAC
-│           ├── N.xxxx.E.SAC
-│           └── N.xxxx.U.SAC      # Raw SAC files (hourly folders)
+│   └── {year}/{YYYYMMDDHH}/            # Raw waveform files (.SAC format)
+│       ├── N.xxxx.N.SAC
+│       ├── N.xxxx.E.SAC
+│       ├── N.xxxx.U.SAC
+│       └── ...
 ├── station/
-│   └── hinet129.txt              # Station list (lat, lon, station)
+│   └── hinet129.txt                    # Station list (lon, lat, station)
 ├── src/
 │   └── my_module/
 │       ├── sac/
-│       │   ├── sac_handler.py    # SAC file I/O and trace loading
-│       │   └── sac_trace.py      # SAC trace data class
-│       ├── spectrogram_generator.py  # Generate spectrograms
-│       ├── utils.py              # Logging and utilities
-│       └── predict.py            # Main pipeline script
-├── requirements.txt              # Python dependencies
-└── README.md                     # Project overview and usage
+│       │   ├── sac_handler.py          # SAC I/O utilities
+│       │   └── sac_trace.py            # Data container for traces
+│       ├── spectrogram_generator.py    # STFT and normalization
+│       ├── utils.py                    # Logging and support tools
+│       └── predict.py                  # Main entry point
+├── requirements.txt                    # Python dependencies
+└── README.md                           # Project documentation (this file)
 ```
+
+---
 
 ## 🛠️ Installation
 
@@ -52,18 +63,21 @@ TremorEpicenter/
    cd TremorEpicenter
    ```
 
-2. **Install dependencies**
+2. **Install required packages**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Prepare Data**
-   - Place SAC waveform files under `sac/{year}/{YYYYMMDDHH}/` or modify the `SAC_ROOT` variable (line 23) in `predict.py` to specify your own path 
-   - Ensure `station/hinet129.txt` is formatted with whitespace separator and headers `lon lat station`.
+3. **Prepare input data**
+   - Place SAC files under `sac/{year}/{YYYYMMDDHH}/`
+   - Modify `SAC_ROOT` in `predict.py` (line 23) if needed
+   - Ensure the station list file `station/hinet129.txt` has whitespace-separated columns: `lon lat station`
 
-## 🖥️ Usage
+---
 
-Run the pipeline over a specified time range with a given step size (in minutes) and number of worker threads:
+## 💻 Usage
+
+Run inference over a specified time window using the command below:
 
 ```bash
 python predict.py \
@@ -74,18 +88,34 @@ python predict.py \
   --out prediction_results.csv
 ```
 
-- `--start` and `--end`: Define start and end timestamps in `YYYY-mm-dd-HH:MM:SS.ffffff` format.
-- `--step`: Time-step increment in minutes (default: 1).
-- `--workers`: Number of threads for parallel station processing (default: 8).
-- `--out`: (Optional) Output CSV file path (default: `reports/prediction_results.csv`).
+### Arguments
 
-## 📄 Paper
+- `--start`, `--end`: Time range for processing (`YYYY-mm-dd-HH:MM:SS.ffffff`)
+- `--step`: Step size in minutes between each analysis window (default: 1)
+- `--workers`: Number of threads for parallel processing (default: 8)
+- `--out`: (Optional) Output CSV file path (default: `reports/prediction_results.csv`)
 
-Include the publication URL here:
+---
 
-```
-Paper URL: coming soon ?
-```
+## 🧠 Models
+
+### 🔹 TremorDetector (`tremor_detector/tremor_detector.keras`)
+A CNN-based classification model that inputs spectrograms from 3-component waveform segments and outputs the probability of:
+
+- **Noise**
+- **Tremor**
+- **Earthquake**
+
+Spectrograms are generated using short-time Fourier transform (STFT) with configurable window length and overlap. These are normalized and fed into the model for classification.
+
+### 🔸 EpicenterRegressor (`epicenter_regressors/*.keras`)
+A set of regression models that input amplitude-normalized waveforms from multiple stations and output:
+
+- **Latitude**
+- **Longitude**  
+of the estimated tremor source.
+
+---
 
 ## 📄 Requirements
 
@@ -98,15 +128,25 @@ Paper URL: coming soon ?
 - scipy==1.13.1
 - obspy==1.4.1
 
-## 📑 Contributing
+---
 
-Contributions, issues, and feature requests are welcome:
+## 📚 Paper
+
+> *Coming soon...*
+
+---
+
+## 📁 Contributing
+
+Feel free to contribute improvements or bug fixes!
 
 1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/my-feature`).
-3. Commit your changes (`git commit -m 'Add some feature'`).
-4. Push to the branch (`git push origin feature/my-feature`).
-5. Open a Pull Request.
+2. Create a new branch (`git checkout -b feature/my-feature`)
+3. Commit changes (`git commit -m "Add feature"`)
+4. Push (`git push origin feature/my-feature`)
+5. Open a Pull Request
+
+---
 
 ## 📝 License
 

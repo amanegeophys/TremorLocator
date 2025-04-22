@@ -18,10 +18,12 @@ from my_module.utils import setup_logger
 
 # ────────────────────────────────────────────────────────────
 # CONSTANTS (hyper‑parameters that rarely change)
-TREMORNET_PATH: Path = Path("../model/spec_to_proba/tremornet.keras")
+TREMORDETECTOR_PATH: Path = Path(
+    "../model/tremor_detector/TremorDetector.keras"
+)
 STATION_FILE: Path = Path("../station/hinet129.txt")
 SAC_ROOT: Path = Path("../sac")  # you can change this to your own path
-AMP_TO_EPI_DIR: Path = Path("../model/amp_to_epicenter")
+AMP_TO_EPI_DIR: Path = Path("../model/epicenter_regressors")
 
 DBSCAN_EPS: float = 0.5
 DBSCAN_MIN_SAMPLES: int = 3
@@ -283,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     stations = load_stations(STATION_FILE)
     sac_handler = SacHandler(str(SAC_ROOT))
     spec_gen = SpectrogramGenerator()
-    tremor_model = load_model(str(TREMORNET_PATH))
+    tremor_model = load_model(str(TREMORDETECTOR_PATH))
     amp_models = [
         load_model(p) for p in glob.iglob(str(AMP_TO_EPI_DIR / "*.keras"))
     ]
