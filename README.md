@@ -59,8 +59,8 @@ TremorLocator/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/amanegeophys/TremorEpicenter.git
-   cd TremorEpicenter
+   git clone https://github.com/amanegeophys/TremorLocator.git
+   cd TremorLocator
    ```
 
 2. **Install required packages**
@@ -99,7 +99,7 @@ python predict.py \
 
 ## 🧠 Models
 
-### 🔹 TremorDetector (`tremor_detector/tremor_detector.keras`)
+### 🔹 TremorDetector (`tremor_detector/TremorDetector.keras`)
 A CNN-based classification model that inputs spectrograms from 3-component waveform segments and outputs the probability of:
 
 - **Noise**
