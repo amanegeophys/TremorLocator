@@ -1,22 +1,22 @@
 # TremorLocator
 
-**Version**: 0.2.0
+**Version**: 0.2.1
 
-**TremorLocator** is a modular system for detecting seismic tremors and estimating their epicenters using deep learning. It is composed of two key components:
+**TremorLocator** is a modular deep learning system for detecting tectonic tremors and estimating their epicenters from continuous waveform data. It is designed for both real-time and offline seismic monitoring workflows.
 
-- **TremorDetector**: A classification model that takes spectrograms of waveform segments as input and determines whether the segment corresponds to *noise*, *tremor*, or *earthquake*.
-- **EpicenterRegressor**: A suite of regression models that estimate the geographic location (epicenter) of detected tremors based on waveform amplitude features.
+- **TremorDetector** is a convolutional neural network (CNN) that classifies spectrograms generated from seismic waveform segments, labeling them as noise, tremor, or earthquake.
+- **EpicenterRegressor** is a set of regression models that estimate the geographic coordinates (epicenter) of detected tremors based on amplitude features from multiple seismic stations.
 
-Together, they enable efficient and accurate analysis of continuous seismic waveform data.
+The system supports SAC (Seismic Analysis Code) format and is optimized for efficient processing of large-scale seismic datasets.
 
 ---
 
 ## 🚀 Features
 
-- **Event Classification**: Use a pretrained CNN-based model (**TremorDetector**) to classify waveform segments using spectrogram inputs.
-- **Epicenter Estimation**: Estimate epicenters for detected tremors using pretrained regression models (**EpicenterRegressor**).
-- **Multithreaded Processing**: High-throughput data handling with concurrent station processing.
-- **Flexible Time Control**: Specify custom time ranges and processing intervals.
+- **Event Classification**: Classify waveform segments using spectrogram inputs with a pretrained CNN-based model (**TremorDetector**).
+- **Epicenter Estimation**: Estimate epicenters of detected tremors using pretrained regression models (**EpicenterRegressor**).
+- **Multithreaded Processing**: Handle high-throughput data with concurrent processing across multiple seismic stations.
+- **Flexible Time Control**: Specify custom time ranges and processing intervals for tailored analysis.
 
 ---
 
@@ -132,7 +132,7 @@ of the estimated tremor source.
 
 ## 📚 Paper
 
-> *Coming soon...*
+> *Coming soon...?*
 
 ---
 
