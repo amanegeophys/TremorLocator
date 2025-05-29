@@ -27,8 +27,11 @@ AMP_TO_EPI_DIR: Path = Path("../model/epicenter_regressors")
 
 DBSCAN_EPS: float = 0.5
 DBSCAN_MIN_SAMPLES: int = 3
-BUNGO_LOC: Tuple[float, float] = (132.1, 33.15)
-ORIGIN_LOC: Tuple[float, float] = (135.0, 34.1)  # base point for offsets
+BUNGO_LOC: Tuple[float, float] = (33.15, 132.1)
+ORIGIN_LOC: Tuple[float, float] = (
+    34.1,
+    135.0,
+)  # base point for offsets (lat, lon)
 
 AMP_NULL_VALUE: float = 1e-9
 TREMOR_THRESHOLD: float = 0.9
@@ -123,6 +126,10 @@ def process_station(
         return [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 
     spec = spec_gen.generate_spectrograms(traces)
+
+    if spec is None:
+        return [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+
     proba = tremor_proba(spec, tremor_model)
     amp = rms_amplitude(traces)
     return amp.tolist() + proba.tolist()
@@ -158,7 +165,7 @@ def estimate_once(
     Returns
     -------
     list of tuple
-        ``[(timestamp, lon, lat, lon_std, lat_std), ...]``.  Empty if no epicenter detected.
+        ``[(timestamp, lat, lon, lat_std, lon_std), ...]``.  Empty if no epicenter detected.
     """
     # --- parallel station processing ----------------------------------
     with ThreadPoolExecutor(max_workers=max_workers) as exe:
@@ -183,7 +190,7 @@ def estimate_once(
     if tremor_df.empty:
         return []  # nothing to write
 
-    coords = np.vstack([tremor_df[["lon", "lat"]].values, BUNGO_LOC])
+    coords = np.vstack([tremor_df[["lat", "lon"]].values, BUNGO_LOC])
     labels = (
         DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
         .fit(coords)
@@ -235,15 +242,15 @@ def estimate_once(
         # inference (batch to save GPU/CPU)
         amp_in = d[["NS", "EW", "UD"]].to_numpy().T[np.newaxis]
         preds = np.array([m.predict(amp_in, verbose=0)[0] for m in amp_models])
-        lon, lat = preds.mean(axis=0) + ORIGIN_LOC[::-1]
-        lon_std, lat_std = preds.std(axis=0)
+        lat, lon = preds.mean(axis=0) + ORIGIN_LOC
+        lat_std, lon_std = preds.std(axis=0)
         epics.append(
             (
                 start_time,
-                float(lon),
                 float(lat),
-                float(lon_std),
+                float(lon),
                 float(lat_std),
+                float(lon_std),
             )
         )
 
@@ -311,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         if epics:
             pd.DataFrame(
                 epics,
-                columns=["timestamp", "lon", "lat", "lon_std", "lat_std"],
+                columns=["timestamp", "lat", "lon", "lat_std", "lon_std"],
             ).to_csv(out_path, mode="a", index=False, header=header_needed)
             header_needed = False
 
