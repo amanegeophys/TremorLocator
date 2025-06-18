@@ -1,6 +1,6 @@
 # TremorLocator
 
-**Version**: 0.2.1
+**Version**: 2.0.1
 
 **TremorLocator** is a modular deep learning system for detecting tectonic tremors and estimating their epicenters from continuous waveform data. It is designed for both real-time and offline seismic monitoring workflows.
 
@@ -85,7 +85,8 @@ python predict.py \
   --end   2025-04-02-00:00:00.000000 \
   --step  10 \
   --workers 16 \
-  --out prediction_results.csv
+  --out prediction_results.csv \
+  --std_threshold 0.065
 ```
 
 ### Arguments
@@ -94,6 +95,8 @@ python predict.py \
 - `--step`: Step size in minutes between each analysis window (default: 1)
 - `--workers`: Number of threads for parallel processing (default: 8)
 - `--out`: (Optional) Output CSV file path (default: `reports/prediction_results.csv`)
+- `--std_threshold`: (Optional) Standard deviation threshold for filtering low-confidence epicenter estimates.
+If specified, estimates with either latitude or longitude standard deviation greater than this threshold will be excluded. No filtering is applied by default.
 
 ---
 
