@@ -1,6 +1,6 @@
 # TremorLocator
 
-**Version**: 2.0.1
+**Version**: 2.0.2
 
 **TremorLocator** is a modular deep learning system for detecting tectonic tremors and estimating their epicenters from continuous waveform data. It is designed for both real-time and offline seismic monitoring workflows.
 
