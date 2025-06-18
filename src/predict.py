@@ -22,19 +22,22 @@ TREMORDETECTOR_PATH: Path = Path(
     "../model/tremor_detector/TremorDetector.keras"
 )
 STATION_FILE: Path = Path("../station/hinet129.txt")
-SAC_ROOT: Path = Path("../sac")  # you can change this to your own path
+SAC_ROOT: Path = Path(
+    "/net/ikkyu/mnt/sda/sac"
+)  # you can change this to your own path
 AMP_TO_EPI_DIR: Path = Path("../model/epicenter_regressors")
 
 DBSCAN_EPS: float = 0.5
 DBSCAN_MIN_SAMPLES: int = 3
-BUNGO_LOC: Tuple[float, float] = (33.15, 132.1)
+BUNGO_LOC: Tuple[float, float] = (132.1, 33.15)
 ORIGIN_LOC: Tuple[float, float] = (
     34.1,
-    135.0,
+    135,
 )  # base point for offsets (lat, lon)
 
 AMP_NULL_VALUE: float = 1e-9
 TREMOR_THRESHOLD: float = 0.9
+STATION_THRESHOLD: int = 3
 # ────────────────────────────────────────────────────────────
 logger = setup_logger(__name__)
 T = TypeVar("T", bound="SacTrace")
@@ -72,9 +75,12 @@ def rms_amplitude(traces: dict[str, T]) -> np.ndarray:
     np.ndarray
         Array ``[NS, EW, UD]`` of RMS values.
     """
-    return np.array(
-        [np.sqrt(np.mean(traces[c].data ** 2)) for c in ("NS", "EW", "UD")]
+    rms_values = np.array(
+        [np.sqrt(np.mean(traces[c] ** 2)) for c in ("NS", "EW", "UD")]
     )
+
+    formatted = [float(f"{v:.3e}") for v in rms_values]
+    return np.array(formatted)
 
 
 def tremor_proba(spec: np.ndarray, model) -> np.ndarray:
@@ -121,18 +127,19 @@ def process_station(
     list
         ``[NS_amp, EW_amp, UD_amp, noise_p, tremor_p, eq_p]``
     """
-    traces = sac_handler.get_sac_traces(station, start_time)
+    traces, filtered_data = sac_handler.get_sac_traces(station, start_time)
     if traces is None:  # missing data ⇒ treat as noise
-        return [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        return [np.nan, np.nan, np.nan, 1.0, 0.0, 0.0]
 
     spec = spec_gen.generate_spectrograms(traces)
 
     if spec is None:
-        return [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        return [np.nan, np.nan, np.nan, 1.0, 0.0, 0.0]
 
     proba = tremor_proba(spec, tremor_model)
-    amp = rms_amplitude(traces)
-    return amp.tolist() + proba.tolist()
+    formated_proba = [float(f"{v:.2e}") for v in proba]
+    amp = rms_amplitude(filtered_data)
+    return amp.tolist() + formated_proba
 
 
 # ╭──────────────────────────────────────────────────────────╮
@@ -146,6 +153,7 @@ def estimate_once(
     amp_models: list,
     start_time: str,
     max_workers: int,
+    std_threshold: float | None = None,
 ) -> list[Tuple[str, float, float]]:
     """Run one inference step and return epicenter list.
 
@@ -161,6 +169,8 @@ def estimate_once(
         Window start time string.
     max_workers
         ThreadPool size for station‐level I/O.
+    std_threshold
+        Threshold for std deviation of estimated epicenter (lat or lon).
 
     Returns
     -------
@@ -184,18 +194,20 @@ def estimate_once(
     results = [f.result() for f in futs]
     cols = ["NS", "EW", "UD", "noise", "tremor", "eq"]
     df = pd.concat([stations, pd.DataFrame(results, columns=cols)], axis=1)
+    # print(df.head(), start_time)
 
     # --- tremor clustering -------------------------------------------
     tremor_df = df[df["tremor"] >= TREMOR_THRESHOLD].copy()
     if tremor_df.empty:
         return []  # nothing to write
 
-    coords = np.vstack([tremor_df[["lat", "lon"]].values, BUNGO_LOC])
+    coords = np.vstack([tremor_df[["lon", "lat"]].values, BUNGO_LOC])
     labels = (
         DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
         .fit(coords)
         .labels_[:-1]
     )
+
     tremor_df["cluster"] = labels
     df = df.merge(
         tremor_df[["station", "cluster"]], on="station", how="left"
@@ -212,17 +224,12 @@ def estimate_once(
             continue
 
         d = df.copy()
-        target = mask | (d["cluster"] == -1)
-        d.loc[~target, ["noise", "tremor", "eq"]] = (1.0, 0.0, 0.0)
-        d.loc[
-            (d["tremor"] >= TREMOR_THRESHOLD) & (d["cluster"] == -1),
-            ["NS", "EW", "UD"],
-        ] = AMP_NULL_VALUE
+        d.loc[~mask, ["noise", "tremor", "eq"]] = (1.0, 0.0, 0.0)
 
         # clip outliers and zero‑std columns
         mean = d[["NS", "EW", "UD"]].mean()
-        std = d[["NS", "EW", "UD"]].std().replace(0.0, np.nan)
-        cutoff = mean + 3 * std
+        std = d[["NS", "EW", "UD"]].std()
+        cutoff = mean + (3 * std)
         for ch in ["NS", "EW", "UD"]:
             d.loc[d[ch] >= cutoff[ch], ch] = AMP_NULL_VALUE
         d.loc[d["tremor"] < TREMOR_THRESHOLD, ["NS", "EW", "UD"]] = (
@@ -230,20 +237,44 @@ def estimate_once(
         )
 
         # z‑score
-        amp_mean = d[["NS", "EW", "UD"]].mean()
-        amp_std = d[["NS", "EW", "UD"]].std()
+        amp_mean = np.nanmean(d[["NS", "EW", "UD"]])
+        amp_std = np.nanstd(d[["NS", "EW", "UD"]])
 
         for ch in ["NS", "EW", "UD"]:
-            if amp_std[ch] == 0.0:
-                d[ch] = 0.0
+            amp_mean = np.nanmean(d[ch])
+            amp_std = np.nanstd(d[ch])
+            if amp_std == 0:
+                d[ch] = 0
             else:
-                d[ch] = (d[ch] - amp_mean[ch]) / amp_std[ch]
+                d[ch] = (d[ch] - amp_mean) / amp_std
 
         # inference (batch to save GPU/CPU)
         amp_in = d[["NS", "EW", "UD"]].to_numpy().T[np.newaxis]
+        amp_in = np.nan_to_num(amp_in)
+
         preds = np.array([m.predict(amp_in, verbose=0)[0] for m in amp_models])
         lat, lon = preds.mean(axis=0) + ORIGIN_LOC
         lat_std, lon_std = preds.std(axis=0)
+
+        if std_threshold is not None:
+            if lat_std > std_threshold or lon_std > std_threshold:
+                continue
+
+        lat1 = lat + 0.5
+        lat2 = lat - 0.5
+        lon1 = lon + 0.5
+        lon2 = lon - 0.5
+        around_stn = d["station"][
+            (d["lon"] >= lon2)
+            & (d["lon"] <= lon1)
+            & (d["lat"] >= lat2)
+            & (d["lat"] <= lat1)
+            & (d["tremor"] >= TREMOR_THRESHOLD)
+        ]
+
+        if len(around_stn) < STATION_THRESHOLD:
+            continue
+        print("around_stn", len(around_stn), start_time)
         epics.append(
             (
                 start_time,
@@ -283,6 +314,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="../reports/prediction_results.csv",
         help="output CSV path",
     )
+    p.add_argument(
+        "--std_threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional. Threshold for std deviation of estimated epicenter (lat or lon). "
+            "Results with std above this will be excluded. Default: no filtering."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -314,6 +354,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             amp_models,
             t_str,
             args.workers,
+            args.std_threshold,
         )
         if epics:
             pd.DataFrame(

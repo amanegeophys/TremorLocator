@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
 
-from obspy import UTCDateTime
+from obspy import UTCDateTime, read
+from obspy.signal.filter import bandpass
 
 from ..utils import setup_logger
 from .sac_trace import SacTrace
@@ -104,7 +105,7 @@ class SacHandler:
         freqmax = freqmax or self.freqmax
         filter_type = filter_type or self.filter_type
 
-        trace = self._fetch_filtered_sac_trace(
+        trace, paths = self._fetch_filtered_sac_trace(
             start_time.strftime("%Y%m%d%H"),
             end_time.strftime("%Y%m%d%H"),
             station_code,
@@ -114,10 +115,21 @@ class SacHandler:
             filter_type,
         )
 
+        try:
+            sac = read(paths[0])
+            datetime_dt = start_time
+            dt = UTCDateTime(datetime_dt)
+            st = sac.slice(dt, dt + 59.99)
+            filtered_data = bandpass(st, freqmin, freqmax, 100, 2, True)
+            filtered_data = filtered_data * 1e-9
+        except Exception as e:
+            print(e)
+            filtered_data = None
+
         if trace is not None:
             trace = trace.trim(start_time, end_time)
 
-        return trace
+        return trace, filtered_data
 
     def get_sac_traces(
         self,
@@ -142,8 +154,11 @@ class SacHandler:
         Returns:
             Dict[str, Optional[SacTrace]]: Dictionary of channel codes to SacTrace objects.
         """
-        return {
-            ch: self.get_sac_trace(
+        traces = {"EW": None, "NS": None, "UD": None}
+        filtered_data = {"EW": None, "NS": None, "UD": None}
+
+        for ch in ["EW", "NS", "UD"]:
+            trace, filtered = self.get_sac_trace(
                 station_code,
                 start_time,
                 ch,
@@ -152,8 +167,10 @@ class SacHandler:
                 duration_seconds=duration_seconds,
                 filter_type=filter_type,
             )
-            for ch in ["EW", "NS", "UD"]
-        }
+            traces[ch] = trace
+            filtered_data[ch] = filtered
+
+        return traces, filtered_data
 
     def _fetch_filtered_sac_trace(
         self,
@@ -186,11 +203,11 @@ class SacHandler:
         trace = self._read_and_concatenate_sac_traces(paths)
 
         if trace is None:
-            return None
+            return None, paths
         if freqmax == -1:
-            return trace
+            return trace, paths
 
-        return trace.filter(freqmin, freqmax, filter_type=filter_type)
+        return trace.filter(freqmin, freqmax, filter_type=filter_type), paths
 
     def _generate_sac_filepaths(
         self, start: str, end: str, station: str, ch: str
