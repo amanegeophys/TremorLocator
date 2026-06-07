@@ -1,0 +1,26 @@
+[project]
+name = "tremorlocator"
+version = "0.1.0"
+description = "Deep learning pipeline for tectonic tremor detection and epicenter estimation."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "keras==3.4.1",
+    "numpy==1.26.4",
+    "obspy==1.4.1",
+    "pandas==2.2.2",
+    "scikit-learn==1.5.1",
+    "scipy==1.13.1",
+    "setuptools>=70.0.0,<81.0.0",
+    "tensorflow==2.17.0",
+    "tqdm==4.66.5",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "matplotlib>=3.9.0",
+]
+
+[tool.uv]
+package = false
