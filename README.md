@@ -36,8 +36,9 @@ TremorLocator/
 │       └── ...
 ├── station/
 │   └── hinet129.txt            # Station metadata
+├── scripts/
+│   └── predict_turbo.py        # Main inference pipeline
 ├── src/
-│   ├── predict_turbo.py        # Main inference pipeline
 │   └── my_module/
 │       ├── sac/                # SAC reading, trimming, filtering, and splitting
 │       ├── spectrogram_generator.py
@@ -67,8 +68,9 @@ SAC_ROOT/
         └── N.KWBH.U.SAC
 ```
 
-If `--sac-root` is omitted, the built-in year-to-path mapping in
-`src/predict_turbo.py` is used.
+If `--sac-root` is omitted, the example `DEFAULT_YEAR_TO_PATH` mapping in
+`scripts/predict_turbo.py` is used. For normal runs, pass `--sac-root` or edit
+that mapping for your local data layout.
 
 ## Installation
 
@@ -93,7 +95,7 @@ uv sync --group dev
 Run the full detection and epicenter pipeline from the repository root:
 
 ```bash
-uv run python src/predict_turbo.py \
+uv run python scripts/predict_turbo.py \
   --start 2025-04-01-00:00:00.000000 \
   --end 2025-04-02-00:00:00.000000 \
   --sac-root /path/to/sac \
@@ -106,8 +108,8 @@ uv run python src/predict_turbo.py \
 Arguments:
 
 - `--start`, `--end`: processing range in `YYYY-mm-dd-HH:MM:SS.ffffff` format.
-- `--sac-root`: optional SAC root directory. Omit this to use the built-in
-  year-specific network paths.
+- `--sac-root`: optional SAC root directory. Omit this only if you have edited
+  the example `DEFAULT_YEAR_TO_PATH` mapping in `scripts/predict_turbo.py`.
 - `--workers`: number of parallel station workers. The default is `8`.
 - `--out`: final epicenter CSV path. The default is
   `reports/prediction_results.csv`.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -21,13 +22,17 @@ import pandas as pd
 from obspy import UTCDateTime
 from tqdm import tqdm
 
-from my_module import SacHandler, SacTrace, SpectrogramGenerator
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
+SRC_DIR: Path = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from my_module import SacHandler, SpectrogramGenerator
 from my_module.utils import setup_logger
 
 # tf.config.set_visible_devices([], device_type='GPU')
 # ────────────────────────────────────────────────────────────
 # CONSTANTS (hyper‑parameters that rarely change)
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 TREMORDETECTOR_PATH: Path = PROJECT_ROOT / "model/tremor_detector/TremorDetector.keras"
 STATION_FILE: Path = PROJECT_ROOT / "station/hinet129.txt"
 AMP_TO_EPI_DIR: Path = PROJECT_ROOT / "model/epicenter_regressors"
@@ -44,6 +49,7 @@ ORIGIN_LOC: Tuple[float, float] = (
 AMP_NULL_VALUE: float = 1e-9
 TREMOR_THRESHOLD: float = 0.9
 STATION_THRESHOLD: int = 3
+TREMOR_PREDICT_BATCH_SIZE: int = 1024
 
 logger = setup_logger(__name__)
 SPEC_COMPONENTS = ["EW", "NS", "UD"]
@@ -53,26 +59,9 @@ DEFAULT_COMPONENT_CHANNELS = {
     "NS": "N",
     "UD": "U",
 }
+SAC_ROOT_YEARS = range(2007, 2026)
 DEFAULT_YEAR_TO_PATH = {
-    2007: "/net/pekora/mnt/sde/sac/2007",
-    2008: "/net/remie/mnt/sde/sac/2008",
-    2009: "/net/remie/mnt/sde/sac/2009",
-    2010: "/net/synology/volume1/Main/sac/2010",
-    2011: "/net/synology/volume1/Main/sac/2011",
-    2012: "/net/synology/volume1/Main/sac/2012",
-    2013: "/net/remie/mnt/sdd/sac/2013",
-    2014: "/net/remie/mnt/sdd/sac/2014",
-    2015: "/net/pekora/mnt/sda/sac/2015",
-    2016: "/net/pekora/mnt/sda/sac/2016",
-    2017: "/net/pekora/mnt/sde/sac/2017",
-    2018: "/net/synology/volume1/Main/sac/2018",
-    2019: "/net/synology/volume1/Main/sac/2019",
-    2020: "/net/synology/volume1/Main/sac/2020",
-    2021: "/net/synology/volume1/Main/sac/2021",
-    2022: "/net/pekora/mnt/sdb/sac/2022",
-    2023: "/net/mandel/mnt/sdb/sac/2023",
-    2024: "/net/pekora/mnt/sdb/sac/2024",
-    2025: "/net/mandel/mnt/sdb/sac/2025",
+    2018: "/path/to/sac/2018",
 }
 
 
@@ -81,7 +70,7 @@ def build_year_to_path(sac_root: str | None) -> dict[int, str | Path]:
         return dict(DEFAULT_YEAR_TO_PATH)
 
     root = Path(sac_root)
-    return {year: root / str(year) for year in DEFAULT_YEAR_TO_PATH}
+    return {year: root / str(year) for year in SAC_ROOT_YEARS}
 
 
 # ╭──────────────────────────────────────────────────────────╮
@@ -133,14 +122,14 @@ def process_station_nopredict(
         - list of spectrograms (np.ndarray)
         - list of RMS amplitude vectors (np.ndarray)
     """
-    # 1) 時刻準備
+    # 1) Prepare minute timestamps.
     start = UTCDateTime(start_time)
     times = np.array(
         [(start + 60 * m).strftime("%Y-%m-%d-%H:%M:%S.%f") for m in range(60)],
         dtype=object,
     )
 
-    # 2) SACトレース取得とフィルタ
+    # 2) Read and filter SAC traces.
     sac_traces = sac_handler.get_sac_traces(station_code, start)
     if any(sac_traces.get(k) is None for k in SPEC_COMPONENTS):
         return station_code, times, [], [], []
@@ -155,7 +144,7 @@ def process_station_nopredict(
     if any(sac_traces.get(k) is None for k in SPEC_COMPONENTS):
         return station_code, times, [], [], []
 
-    # 3) 1分切り出し
+    # 3) Split the hour into minute windows.
     sac_traces_min, minute_times = sac_handler.split_sac_traces_by_minute(
         sac_traces,
         start,
@@ -166,19 +155,52 @@ def process_station_nopredict(
     specs: list[np.ndarray] = []
     rms_list: list[np.ndarray] = []
 
-    for minute_time, seg in zip(minute_times, sac_traces_min):
-        spec = spec_gen.generate_spectrograms(seg, normalize=True)
-        if spec is None:
+    batch_result = spec_gen.generate_spectrogram_batch(sac_traces_min, normalize=True)
+    if batch_result is None:
+        return station_code, times, [], [], []
+    specs_arr, valid_windows = batch_result
+
+    for local_idx, (minute_time, seg) in enumerate(zip(minute_times, sac_traces_min)):
+        if not bool(valid_windows[local_idx]):
             continue
         minute_idx = int(round((UTCDateTime(minute_time) - start) / 60.0))
         valid_idxs.append(minute_idx)
-        specs.append(spec.astype(np.float32))
-        # RMS をベクトル化
+        specs.append(specs_arr[local_idx])
+        # Compute RMS amplitudes as a vector.
         data = np.vstack([seg[c].data for c in AMP_COMPONENTS])
         rms = np.sqrt(np.mean(data * data, axis=1, dtype=np.float32))
         rms_list.append(rms)
 
     return station_code, times, valid_idxs, specs, rms_list
+
+
+def build_rms_probability_dataframe(
+    station_codes: Sequence[str],
+    times: np.ndarray,
+    records: Sequence[dict],
+) -> pd.DataFrame:
+    station_to_index = {station: idx for idx, station in enumerate(station_codes)}
+    values = np.full((len(station_codes), len(times), 6), np.nan, dtype=np.float64)
+
+    for rec in records:
+        station_idx = station_to_index[rec["station"]]
+        minute_idx = rec["minute_idx"]
+        values[station_idx, minute_idx, :3] = rec["rms"]
+        values[station_idx, minute_idx, 3:] = rec["prob"]
+
+    flat = values.reshape(-1, 6)
+    return pd.DataFrame(
+        {
+            "datetime": np.tile(times, len(station_codes)),
+            "NS": flat[:, 0],
+            "EW": flat[:, 1],
+            "UD": flat[:, 2],
+            "noise": flat[:, 3],
+            "tremor": flat[:, 4],
+            "eq": flat[:, 5],
+            "station": np.repeat(np.asarray(station_codes, dtype=object), len(times)),
+        }
+    )
 
 
 def estimate_once_fast(
@@ -213,7 +235,7 @@ def estimate_once_fast(
     logger.info(f"[{start_time}] Starting estimate_once_fast")
     t0 = time.perf_counter()
 
-    # 1) ThreadPool: SAC読み込み＋spec/RMS収集
+    # 1) Collect SAC windows, RMS amplitudes, and spectrograms in parallel.
     records: list[dict] = []
     specs_all: list[np.ndarray] = []
 
@@ -224,7 +246,7 @@ def estimate_once_fast(
             ): st
             for st in station_codes
         }
-        # 受付順不問なので as_completed
+        # Completion order does not matter here.
         with tqdm(
             total=len(futures), desc=f"[{start_time}] 📥 Load + RMS + Spec"
         ) as pbar:
@@ -237,12 +259,12 @@ def estimate_once_fast(
                             "station": st,
                             "minute_idx": idx,
                             "rms": rms,
-                            "prob": None,  # 後で埋める
+                            "prob": None,  # Filled after prediction.
                         }
                     )
                 pbar.update(1)
 
-    # 2) スペクトログラムがなければ空CSV出力して終了
+    # 2) If no spectrograms are available, write an empty CSV and stop.
     if not specs_all:
         pd.DataFrame(
             columns=["datetime", "NS", "EW", "UD", "noise", "tremor", "eq", "station"]
@@ -250,44 +272,24 @@ def estimate_once_fast(
         logger.info(f"[{start_time}] No data found — skipping.")
         return
 
-    # 3) バッチ予測（chunking with batch_size）
+    # 3) Batch prediction with a bounded Keras batch size.
     specs_arr = np.stack(specs_all, axis=0)  # shape=(N,52,52,3)
     logger.info(f"[{start_time}] Starting tremor prediction...")
-    preds = tremor_detector.predict(specs_arr, batch_size=specs_arr.shape[0], verbose=0)
+    preds = tremor_detector.predict(
+        specs_arr,
+        batch_size=TREMOR_PREDICT_BATCH_SIZE,
+        verbose=0,
+    )
     logger.info(f"[{start_time}] Prediction completed")
 
-    # 4) records に確率を戻す
+    # 4) Attach probabilities to the records.
     for rec, prob in zip(records, preds):
         rec["prob"] = prob
 
-    # 5) DataFrame 一括組立
-    # 全ステーション×60分のテンプレートを準備
-    template = pd.DataFrame(
-        {
-            "datetime": times,
-            "NS": np.nan,
-            "EW": np.nan,
-            "UD": np.nan,
-            "noise": np.nan,
-            "tremor": np.nan,
-            "eq": np.nan,
-        }
-    )
+    # 5) Build the output DataFrame in one pass.
+    df_all = build_rms_probability_dataframe(station_codes, times, records)
 
-    dfs: list[pd.DataFrame] = []
-    for st in station_codes:
-        df_st = template.copy()
-        df_st["station"] = st
-        # このステーション分だけフィルタ
-        for rec in filter(lambda r: r["station"] == st, records):
-            i = rec["minute_idx"]
-            df_st.loc[i, ["NS", "EW", "UD"]] = rec["rms"]
-            df_st.loc[i, ["noise", "tremor", "eq"]] = rec["prob"]
-        dfs.append(df_st)
-
-    df_all = pd.concat(dfs, ignore_index=True)
-
-    # 6) 一括 CSV 出力（フォーマットは float_format で）
+    # 6) Write the CSV with the expected float format.
     df_all.to_csv(output_csv_path, index=False, float_format="%.3e")
     logger.info(
         f"[{start_time}] estimate_once_fast finished in {time.perf_counter() - t0:.2f}s"
@@ -443,7 +445,7 @@ def estimate_epicenter(
         pred_std = preds.std(axis=0)  # (N, 2)
         lats = (
             pred_mean[:, 0] + ORIGIN_LOC[0]
-        )  # 注意: ORIGIN_LOC=(lat,lon)…順序混乱してないか確認!
+        )
         lons = pred_mean[:, 1] + ORIGIN_LOC[1]
         lat_stds = pred_std[:, 0]
         lon_stds = pred_std[:, 1]
@@ -526,7 +528,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help=(
             "Optional SAC root directory with files arranged as "
             "SAC_ROOT/{year}/{YYYYMMDDHH}/{station}.{component}.SAC. "
-            "If omitted, the built-in year-to-path mapping is used."
+            "If omitted, the example DEFAULT_YEAR_TO_PATH mapping is used."
         ),
     )
     p.add_argument(
@@ -603,6 +605,4 @@ def main(argv: Sequence[str]) -> None:
 
 
 if __name__ == "__main__":
-    import sys
-
     main(sys.argv[1:])

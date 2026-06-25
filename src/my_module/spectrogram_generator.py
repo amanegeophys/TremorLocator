@@ -51,6 +51,9 @@ class SpectrogramGenerator:
         self.last_time_bins: np.ndarray | None = None
         self.last_freq_bins: np.ndarray | None = None
         self._stft_params_cache: dict[float, StftParams] = {}
+        self._legacy_column_cache: dict[
+            tuple[float, int, int, int], tuple[np.ndarray, np.ndarray]
+        ] = {}
 
         self._validate_config()
 
@@ -125,35 +128,47 @@ class SpectrogramGenerator:
     ) -> SacTrace | None:
         return sac_traces.get(component)
 
-    def generate_spectrograms(
+    def generate_spectrogram_batch(
         self,
-        sac_traces: Mapping[str, SacTrace | None],
+        sac_trace_batch: Sequence[Mapping[str, SacTrace | None]],
         normalize: bool = True,
-    ) -> np.ndarray | None:
-        spectrograms = []
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        if not sac_trace_batch:
+            return None
+
+        params: StftParams | None = None
+        npts: int | None = None
+        component_waveforms: list[np.ndarray] = []
+
         for component in self.components:
-            sac_trace = self._get_trace(sac_traces, component)
-            if sac_trace is None:
-                return None
+            waveforms = []
+            for sac_traces in sac_trace_batch:
+                sac_trace = self._get_trace(sac_traces, component)
+                if sac_trace is None:
+                    return None
 
-            spectrogram = self.generate_spectrogram(sac_trace, normalize=normalize)
-            if spectrogram is None:
-                return None
-            spectrograms.append(spectrogram)
+                trace_params = self._get_stft_params(sac_trace.stats.sampling_rate)
+                if params is None:
+                    params = trace_params
+                    npts = sac_trace.data.size
+                elif (
+                    trace_params.sampling_rate != params.sampling_rate
+                    or sac_trace.data.size != npts
+                ):
+                    raise ValueError(
+                        "Batched spectrograms require equal sampling rates and "
+                        "sample counts."
+                    )
 
-        stacked = np.stack(spectrograms, axis=0).astype(np.float32, copy=False)
-        if self.output_layout == "channels_last":
-            stacked = np.moveaxis(stacked, 0, -1)
-        return stacked
+                waveforms.append(np.asarray(sac_trace.data, dtype=np.float64))
 
-    def generate_spectrogram(
-        self,
-        sac_trace: SacTrace,
-        normalize: bool = True,
-    ) -> np.ndarray | None:
-        waveform = np.asarray(sac_trace.data, dtype=np.float64)
-        params = self._get_stft_params(sac_trace.stats.sampling_rate)
-        freq, time_bins, zxx = self._run_stft(waveform, params)
+            component_waveforms.append(np.stack(waveforms, axis=0))
+
+        if params is None or npts is None:
+            return None
+
+        waveform_batch = np.concatenate(component_waveforms, axis=0)
+        freq, time_bins, zxx = self._run_stft_batch(waveform_batch, params)
 
         freq_mask = (self.freqmin <= freq) & (freq <= self.freqmax)
         if not np.any(freq_mask):
@@ -166,32 +181,47 @@ class SpectrogramGenerator:
 
         self.last_time_bins = np.asarray(time_bins, dtype=np.float64)
         self.last_freq_bins = np.asarray(freq[freq_mask], dtype=np.float64)
-        spec = self._to_spectral_values(zxx[freq_mask, :], params)
 
-        if np.all(waveform == 0):
-            return np.zeros(spec.shape, dtype=np.float32)
+        spec = self._to_spectral_values(zxx[:, freq_mask, :], params)
+        valid_rows = np.all(np.isfinite(spec), axis=(1, 2))
 
         if normalize:
-            spec = self._normalize_spectrogram(spec)
-            if spec is None:
-                return None
+            spec, normalized_valid_rows = self._normalize_spectrogram_batch(spec)
+            valid_rows &= normalized_valid_rows
 
-        return spec.astype(np.float32, copy=False)
+        zero_rows = np.all(waveform_batch == 0, axis=1)
+        spec[zero_rows] = 0.0
 
-    def _run_stft(
+        n_components = len(self.components)
+        n_windows = len(sac_trace_batch)
+        component_first = spec.reshape(n_components, n_windows, *spec.shape[1:])
+        valid_by_component = valid_rows.reshape(n_components, n_windows)
+        valid_windows = np.all(valid_by_component, axis=0)
+
+        stacked = np.moveaxis(component_first, 0, 1)
+        if self.output_layout == "channels_last":
+            stacked = np.moveaxis(stacked, 1, -1)
+
+        return stacked.astype(np.float32, copy=False), valid_windows
+
+    def _run_stft_batch(
         self,
-        waveform: np.ndarray,
+        waveforms: np.ndarray,
         params: StftParams,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        zxx = params.transform.stft(waveform, padding=self.stft_padding)
-        time_bins = params.transform.t(waveform.size)
+        zxx = params.transform.stft(
+            waveforms,
+            padding=self.stft_padding,
+            axis=-1,
+        )
+        time_bins = params.transform.t(waveforms.shape[-1])
         if self.align_legacy_stft_bins:
             time_bins, column_indices = self._legacy_time_bins(
-                waveform.size,
+                waveforms.shape[-1],
                 params,
                 time_bins,
             )
-            zxx = zxx[:, column_indices]
+            zxx = zxx[..., column_indices]
         return params.transform.f, time_bins, zxx
 
     def _legacy_time_bins(
@@ -199,21 +229,34 @@ class SpectrogramGenerator:
         npts: int,
         params: StftParams,
         short_time_bins: np.ndarray,
-    ) -> tuple[np.ndarray, list[int]]:
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cache_key = (
+            params.sampling_rate,
+            int(npts),
+            int(params.nperseg),
+            int(params.hop),
+        )
+        cached = self._legacy_column_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         n_frames = self._legacy_frame_count(npts, params)
         legacy_time_bins = np.arange(n_frames, dtype=np.float64) * (
             params.hop / params.sampling_rate
         )
-        column_indices = []
-        for time_bin in legacy_time_bins:
+        column_indices = np.empty(n_frames, dtype=np.intp)
+        for idx, time_bin in enumerate(legacy_time_bins):
             matches = np.where(np.isclose(short_time_bins, time_bin))[0]
             if matches.size != 1:
                 raise RuntimeError(
                     "Could not align ShortTimeFFT time bin with legacy STFT: "
                     f"time={time_bin}"
                 )
-            column_indices.append(int(matches[0]))
-        return legacy_time_bins, column_indices
+            column_indices[idx] = int(matches[0])
+
+        cached = legacy_time_bins, column_indices
+        self._legacy_column_cache[cache_key] = cached
+        return cached
 
     @staticmethod
     def _legacy_frame_count(npts: int, params: StftParams) -> int:
@@ -231,44 +274,53 @@ class SpectrogramGenerator:
             return magnitude
         return magnitude**2 / max(params.sampling_rate / params.nfft, self.eps)
 
-    def _normalize_spectrogram(self, spec: np.ndarray) -> np.ndarray | None:
-        if not np.all(np.isfinite(spec)):
-            self.logger.warning("Spectrogram contains non-finite values.")
-            return None
-
-        if self.normalize_type == "log_min_to_one":
-            if float(np.max(spec)) == float(np.min(spec)):
-                self.logger.warning("Spectrogram is constant; returning zeros.")
-                return np.zeros_like(spec, dtype=np.float64)
-            min_value = float(np.min(spec))
-            if min_value <= 0:
-                min_value = self.eps
-            scaled = np.log10(np.maximum(spec, self.eps) / min_value)
-            max_value = float(np.max(scaled))
-            if max_value <= 0 or not np.isfinite(max_value):
-                self.logger.warning("Log-scaled spectrogram has invalid max value.")
-                return None
-            return scaled / max_value
-
-        if self.normalize_type == "min_max":
-            min_value = float(np.min(spec))
-            max_value = float(np.max(spec))
-            if max_value == min_value:
-                self.logger.warning(
-                    "Spectrogram min and max are identical; returning zeros."
-                )
-                return np.zeros_like(spec, dtype=np.float64)
-            return (spec - min_value) / (max_value - min_value)
-
-        if self.normalize_type == "mean_std":
-            mean = float(np.mean(spec))
-            std = float(np.std(spec))
-            if std == 0:
-                self.logger.warning("Spectrogram std is zero; returning zeros.")
-                return np.zeros_like(spec, dtype=np.float64)
-            return (spec - mean) / std
+    def _normalize_spectrogram_batch(
+        self,
+        spec: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        valid_rows = np.all(np.isfinite(spec), axis=(1, 2))
+        out = np.zeros_like(spec, dtype=np.float64)
 
         if self.normalize_type == "none":
-            return spec
+            out[valid_rows] = spec[valid_rows]
+            return out, valid_rows
+
+        valid_spec = spec[valid_rows]
+        if valid_spec.size == 0:
+            return out, valid_rows
+
+        if self.normalize_type == "log_min_to_one":
+            min_value = np.min(valid_spec, axis=(1, 2), keepdims=True)
+            max_value = np.max(valid_spec, axis=(1, 2), keepdims=True)
+            constant = max_value == min_value
+            safe_min = np.where(min_value <= 0, self.eps, min_value)
+            scaled = np.log10(np.maximum(valid_spec, self.eps) / safe_min)
+            scaled_max = np.max(scaled, axis=(1, 2), keepdims=True)
+            scaled_valid = (scaled_max > 0) & np.isfinite(scaled_max)
+            normalized = np.zeros_like(valid_spec, dtype=np.float64)
+            use_scaled = (~constant) & scaled_valid
+            np.divide(scaled, scaled_max, out=normalized, where=use_scaled)
+            out[valid_rows] = normalized
+            row_valid = np.ones(valid_spec.shape[0], dtype=bool)
+            row_valid &= np.squeeze(constant | scaled_valid, axis=(1, 2))
+            valid_rows[valid_rows] = row_valid
+            return out, valid_rows
+
+        if self.normalize_type == "min_max":
+            min_value = np.min(valid_spec, axis=(1, 2), keepdims=True)
+            max_value = np.max(valid_spec, axis=(1, 2), keepdims=True)
+            denom = max_value - min_value
+            normalized = np.zeros_like(valid_spec, dtype=np.float64)
+            np.divide(valid_spec - min_value, denom, out=normalized, where=denom != 0)
+            out[valid_rows] = normalized
+            return out, valid_rows
+
+        if self.normalize_type == "mean_std":
+            mean = np.mean(valid_spec, axis=(1, 2), keepdims=True)
+            std = np.std(valid_spec, axis=(1, 2), keepdims=True)
+            normalized = np.zeros_like(valid_spec, dtype=np.float64)
+            np.divide(valid_spec - mean, std, out=normalized, where=std != 0)
+            out[valid_rows] = normalized
+            return out, valid_rows
 
         raise ValueError(f"normalize_type '{self.normalize_type}' is not supported.")
